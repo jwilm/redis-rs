@@ -59,7 +59,7 @@ impl<'a, T: Read> Parser<T> {
     }
 
     fn read_line(&mut self) -> RedisResult<Vec<u8>> {
-        let mut rv = vec![];
+        let mut rv = Vec::with_capacity(8);
 
         loop {
             let b = try!(self.read_byte());
@@ -97,28 +97,40 @@ impl<'a, T: Read> Parser<T> {
     }
 
     fn read(&mut self, bytes: usize) -> RedisResult<Vec<u8>> {
-        let mut rv = vec![0; bytes];
-        let mut i = 0;
-        while i < bytes {
-            let res_nread = {
-                let ref mut buf = &mut rv[i..];
-                self.reader.read(buf)
-            };
-            match res_nread {
-                Ok(nread) if nread > 0 => i += nread,
-                Ok(_) => fail!((ErrorKind::ResponseError, "Could not read enough bytes")),
-                Err(e) => return Err(From::from(e)),
-            }
-        }
+        let mut rv = Vec::with_capacity(bytes);
+        unsafe { rv.set_len(bytes); }
+        self.reader.read_exact(&mut rv)?;
         Ok(rv)
     }
 
     fn read_int_line(&mut self) -> RedisResult<i64> {
-        let line = try!(self.read_string_line());
-        match line.trim().parse::<i64>() {
-            Err(_) => fail!((ErrorKind::ResponseError, "Expected integer, got garbage")),
-            Ok(value) => Ok(value),
+        let mut int = 0i64;
+        let mut neg = 1;
+
+        let mut b = try!(self.read_byte());
+        if b as char == '-' {
+            neg = -1;
+            b = try!(self.read_byte());
         }
+
+        loop {
+            match b as char {
+                '0' ... '9' => {
+                    int = (int * 10) + i64::from(b - b'0');
+                }
+                '\n' => {
+                    break;
+                }
+                '\r' => {
+                    try!(self.expect_char('\n'));
+                    break;
+                }
+                _ => fail!((ErrorKind::ResponseError, "Expected integer, got garbage"))
+            };
+            b = try!(self.read_byte());
+        }
+
+        Ok(neg * int)
     }
 
     fn parse_status(&mut self) -> RedisResult<Value> {
