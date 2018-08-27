@@ -1,5 +1,4 @@
 use std::io::{Read, BufReader};
-use std::str::from_utf8;
 
 use types::{RedisResult, Value, ErrorKind, make_extension_error};
 
@@ -14,7 +13,6 @@ pub struct Parser<T> {
 /// the client but in some more complex situations it might be useful to be
 /// able to parse the redis responses.
 impl<'a, T: Read> Parser<T> {
-
     /// Creates a new parser that parses the data behind the reader.  More
     /// than one value can be behind the reader in which case the parser can
     /// be invoked multiple times.  In other words: the stream does not have
@@ -23,7 +21,7 @@ impl<'a, T: Read> Parser<T> {
         Parser { reader: reader }
     }
 
-    /* public api */
+    // public api
 
     /// parses a single value out of the stream.  If there are multiple
     /// values you can call this multiple times.  If the reader is not yet
@@ -40,7 +38,7 @@ impl<'a, T: Read> Parser<T> {
         }
     }
 
-    /* internal helpers */
+    // internal helpers
 
     #[inline]
     fn expect_char(&mut self, refchar: char) -> RedisResult<()> {
@@ -61,17 +59,19 @@ impl<'a, T: Read> Parser<T> {
     }
 
     fn read_line(&mut self) -> RedisResult<Vec<u8>> {
-        let mut rv = vec![];
+        let mut rv = Vec::with_capacity(8);
 
         loop {
             let b = try!(self.read_byte());
             match b as char {
-                '\n' => { break; }
+                '\n' => {
+                    break;
+                }
                 '\r' => {
                     try!(self.expect_char('\n'));
                     break;
-                },
-                _ => { rv.push(b) }
+                }
+                _ => rv.push(b),
             };
         }
 
@@ -80,9 +80,7 @@ impl<'a, T: Read> Parser<T> {
 
     fn read_string_line(&mut self) -> RedisResult<String> {
         match String::from_utf8(try!(self.read_line())) {
-            Err(_) => {
-                fail!((ErrorKind::ResponseError, "Expected valid string, got garbage"))
-            }
+            Err(_) => fail!((ErrorKind::ResponseError, "Expected valid string, got garbage")),
             Ok(value) => Ok(value),
         }
     }
@@ -99,31 +97,40 @@ impl<'a, T: Read> Parser<T> {
     }
 
     fn read(&mut self, bytes: usize) -> RedisResult<Vec<u8>> {
-        let mut rv = vec![0; bytes];
-        let mut i = 0;
-        while i < bytes {
-            let res_nread = {
-                let ref mut buf = &mut rv[i..];
-                self.reader.read(buf)
-            };
-            match res_nread {
-                Ok(nread) if nread > 0 =>
-                    i += nread,
-                Ok(_) =>
-                    return fail!((ErrorKind::ResponseError, "Could not read enough bytes")),
-                Err(e) =>
-                    return Err(From::from(e))
-            }
-        };
+        let mut rv = Vec::with_capacity(bytes);
+        unsafe { rv.set_len(bytes); }
+        self.reader.read_exact(&mut rv)?;
         Ok(rv)
     }
 
     fn read_int_line(&mut self) -> RedisResult<i64> {
-        let line = try!(self.read_string_line());
-        match line.trim().parse::<i64>() {
-            Err(_) => fail!((ErrorKind::ResponseError, "Expected integer, got garbage")),
-            Ok(value) => Ok(value)
+        let mut int = 0i64;
+        let mut neg = 1;
+
+        let mut b = try!(self.read_byte());
+        if b as char == '-' {
+            neg = -1;
+            b = try!(self.read_byte());
         }
+
+        loop {
+            match b as char {
+                '0' ... '9' => {
+                    int = (int * 10) + i64::from(b - b'0');
+                }
+                '\n' => {
+                    break;
+                }
+                '\r' => {
+                    try!(self.expect_char('\n'));
+                    break;
+                }
+                _ => fail!((ErrorKind::ResponseError, "Expected integer, got garbage"))
+            };
+            b = try!(self.read_byte());
+        }
+
+        Ok(neg * int)
     }
 
     fn parse_status(&mut self) -> RedisResult<Value> {
@@ -173,11 +180,13 @@ impl<'a, T: Read> Parser<T> {
             "EXECABORT" => ErrorKind::ExecAbortError,
             "LOADING" => ErrorKind::BusyLoadingError,
             "NOSCRIPT" => ErrorKind::NoScriptError,
-            code => { fail!(make_extension_error(code, pieces.next())); }
+            code => {
+                fail!(make_extension_error(code, pieces.next()));
+            }
         };
         match pieces.next() {
             Some(detail) => fail!((kind, desc, detail.to_string())),
-            None => fail!((kind, desc))
+            None => fail!((kind, desc)),
         }
     }
 }

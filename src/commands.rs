@@ -1,6 +1,8 @@
+// can't use rustfmt here because it screws up the file.
+#![cfg_attr(rustfmt, rustfmt_skip)]
 use types::{FromRedisValue, ToRedisArgs, RedisResult, NumericBehavior};
 use client::Client;
-use connection::{Connection, ConnectionLike};
+use connection::{Connection, ConnectionLike, Msg};
 use cmd::{cmd, Cmd, Pipeline, Iter};
 
 
@@ -129,6 +131,11 @@ implement_commands! {
         cmd(if key.is_single_arg() { "GET" } else { "MGET" }).arg(key)
     }
 
+    /// Gets all keys matching pattern
+    fn keys<K: ToRedisArgs>(key: K) {
+        cmd("KEYS").arg(key)
+    }
+
     /// Set the string value of a key.
     fn set<K: ToRedisArgs, V: ToRedisArgs>(key: K, value: V) {
         cmd("SET").arg(key).arg(value)
@@ -223,7 +230,7 @@ implement_commands! {
 
     /// Sets or clears the bit at offset in the string value stored at key.
     fn setbit<K: ToRedisArgs>(key: K, offset: usize, value: bool) {
-        cmd("SETBIT").arg(key).arg(offset).arg(value)
+        cmd("SETBIT").arg(key).arg(offset).arg(if value {1} else {0})
     }
 
     /// Returns the bit value at offset in the string value stored at key.
@@ -402,6 +409,11 @@ implement_commands! {
     /// range of elements specified.
     fn ltrim<K: ToRedisArgs>(key: K, start: isize, stop: isize) {
         cmd("LTRIM").arg(key).arg(start).arg(stop)
+    }
+
+    /// Sets the list element at index to value
+    fn lset<K: ToRedisArgs, V: ToRedisArgs>(key: K, index: isize, value: V) {
+        cmd("LSET").arg(key).arg(index).arg(value)
     }
 
     /// Removes and returns the last element of the list stored at key.
@@ -715,10 +727,113 @@ implement_commands! {
     fn pfmerge<K: ToRedisArgs>(dstkey: K, srckeys: K) {
         cmd("PFMERGE").arg(dstkey).arg(srckeys)
     }
+
+    /// Posts a message to the given channel.
+    fn publish<K: ToRedisArgs, E: ToRedisArgs>(channel: K, message: E) {
+        cmd("PUBLISH").arg(channel).arg(message)
+    }
+}
+
+/// Allows pubsub callbacks to stop receiving messages.
+///
+/// Arbitrary data may be returned from `Break`.
+pub enum ControlFlow<U> {
+    Continue,
+    Break(U),
+}
+
+/// The PubSub trait allows subscribing to one or more channels
+/// and receiving a callback whenever a message arrives.
+///
+/// Each method handles subscribing to the list of keys, waiting for
+/// messages, and unsubscribing from the same list of channels once
+/// a ControlFlow::Break is encountered.
+///
+/// Once (p)subscribe returns Ok(U), the connection is again safe to use
+/// for calling other methods.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # fn do_something() -> redis::RedisResult<()> {
+/// use redis::{PubSubCommands, ControlFlow};
+/// let client = redis::Client::open("redis://127.0.0.1/")?;
+/// let mut con = client.get_connection()?;
+/// let mut count = 0;
+/// con.subscribe(&["foo"], |msg| {
+///     // do something with message
+///     assert_eq!(msg.get_channel(), Ok(String::from("foo")));
+///
+///     // increment messages seen counter
+///     count += 1;
+///     match count {
+///         // stop after receiving 10 messages
+///         10 => ControlFlow::Break(()),
+///         _ => ControlFlow::Continue,
+///     }
+/// });
+/// # Ok(()) }
+/// ```
+// TODO In the future, it would be nice to implement Try such that `?` will work
+//      within the closure.
+pub trait PubSubCommands: Sized {
+    /// Subscribe to a list of channels using SUBSCRIBE and run the provided
+    /// closure for each message received.
+    ///
+    /// For every `Msg` passed to the provided closure, either
+    /// `ControlFlow::Break` or `ControlFlow::Continue` must be returned. This
+    /// method will not return until `ControlFlow::Break` is observed.
+    fn subscribe<'a, C, F, U>(&mut self, _: C, _: F) -> RedisResult<U>
+        where F: FnMut(Msg) -> ControlFlow<U>,
+              C: ToRedisArgs;
+
+    /// Subscribe to a list of channels using PSUBSCRIBE and run the provided
+    /// closure for each message received.
+    ///
+    /// For every `Msg` passed to the provided closure, either
+    /// `ControlFlow::Break` or `ControlFlow::Continue` must be returned. This
+    /// method will not return until `ControlFlow::Break` is observed.
+    fn psubscribe<'a, P, F, U>(&mut self, _: P, _: F) -> RedisResult<U>
+        where F: FnMut(Msg) -> ControlFlow<U>,
+              P: ToRedisArgs;
 }
 
 impl Commands for Connection {}
 impl Commands for Client {}
+
+impl PubSubCommands for Connection {
+    fn subscribe<'a, C, F, U>(&mut self, channels: C, mut func: F) -> RedisResult<U>
+        where F: FnMut(Msg) -> ControlFlow<U>,
+              C: ToRedisArgs
+    {
+        let mut pubsub = self.as_pubsub();
+        pubsub.subscribe(channels)?;
+
+        loop {
+            let msg = pubsub.get_message()?;
+            match func(msg) {
+                ControlFlow::Continue => continue,
+                ControlFlow::Break(value) => return Ok(value),
+            }
+        }
+    }
+
+    fn psubscribe<'a, P, F, U>(&mut self, patterns: P, mut func: F) -> RedisResult<U>
+        where F: FnMut(Msg) -> ControlFlow<U>,
+              P: ToRedisArgs
+    {
+        let mut pubsub = self.as_pubsub();
+        pubsub.psubscribe(patterns)?;
+
+        loop {
+            let msg = pubsub.get_message()?;
+            match func(msg) {
+                ControlFlow::Continue => continue,
+                ControlFlow::Break(value) => return Ok(value),
+            }
+        };
+    }
+}
 
 impl PipelineCommands for Pipeline {
     fn perform(&mut self, cmd: &Cmd) -> &mut Pipeline {

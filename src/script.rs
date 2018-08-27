@@ -26,14 +26,13 @@ pub struct Script {
 /// assert_eq!(result, Ok(3));
 /// ```
 impl Script {
-
     /// Creates a new script object.
     pub fn new(code: &str) -> Script {
         let mut hash = Sha1::new();
         hash.update(code.as_bytes());
         Script {
             code: code.to_string(),
-            hash: hash.hexdigest(),
+            hash: hash.digest().to_string(),
         }
     }
 
@@ -67,17 +66,22 @@ impl Script {
     /// not change.  Normally you can use `arg` and `key` directly.
     #[inline]
     pub fn prepare_invoke(&self) -> ScriptInvocation {
-        ScriptInvocation { script: self, args: vec![], keys: vec![] }
+        ScriptInvocation {
+            script: self,
+            args: vec![],
+            keys: vec![],
+        }
     }
 
     /// Invokes the script directly without arguments.
     #[inline]
     pub fn invoke<T: FromRedisValue>(&self, con: &ConnectionLike) -> RedisResult<T> {
         ScriptInvocation {
-            script: self,
-            args: vec![],
-            keys: vec![],
-        }.invoke(con)
+                script: self,
+                args: vec![],
+                keys: vec![],
+            }
+            .invoke(con)
     }
 }
 
@@ -93,11 +97,12 @@ pub struct ScriptInvocation<'a> {
 /// the `ScriptInvocation` holds the arguments that should be invoked until
 /// it's sent to the server.
 impl<'a> ScriptInvocation<'a> {
-
     /// Adds a regular argument to the invocation.  This ends up as `ARGV[i]`
     /// in the script.
     #[inline]
-    pub fn arg<T: ToRedisArgs>(&'a mut self, arg: T) -> &'a mut ScriptInvocation {
+    pub fn arg<'b, T: ToRedisArgs>(&'b mut self, arg: T) -> &'b mut ScriptInvocation<'a>
+        where 'a: 'b
+    {
         self.args.extend(arg.to_redis_args().into_iter());
         self
     }
@@ -105,7 +110,9 @@ impl<'a> ScriptInvocation<'a> {
     /// Adds a key argument to the invocation.  This ends up as `KEYS[i]`
     /// in the script.
     #[inline]
-    pub fn key<T: ToRedisArgs>(&'a mut self, key: T) -> &'a mut ScriptInvocation {
+    pub fn key<'b, T: ToRedisArgs>(&'b mut self, key: T) -> &'b mut ScriptInvocation<'a>
+        where 'a: 'b
+    {
         self.keys.extend(key.to_redis_args().into_iter());
         self
     }
@@ -118,11 +125,14 @@ impl<'a> ScriptInvocation<'a> {
                 .arg(self.script.hash.as_bytes())
                 .arg(self.keys.len())
                 .arg(&*self.keys)
-                .arg(&*self.args).query(con) {
-                Ok(val) => { return Ok(val); }
+                .arg(&*self.args)
+                .query(con) {
+                Ok(val) => {
+                    return Ok(val);
+                }
                 Err(err) => {
                     if err.kind() == ErrorKind::NoScriptError {
-                        let _ : () = try!(cmd("SCRIPT")
+                        let _: () = try!(cmd("SCRIPT")
                             .arg("LOAD")
                             .arg(self.script.code.as_bytes())
                             .query(con));

@@ -18,11 +18,11 @@
 //!
 //! # Basic Operation
 //!
-//! redis-rs exposes to API levels: a low- and a high-level part.  The high-level
-//! part does not expose all the functionality of redis and might take some
-//! liberties in how it speaks the protocol.  The low-level part of the API
-//! allows you to express any request on the redis level.  You can fluently
-//! switch between both API levels at any point.
+//! redis-rs exposes two API levels: a low- and a high-level part.
+//! The high-level part does not expose all the functionality of redis and
+//! might take some liberties in how it speaks the protocol.  The low-level
+//! part of the API allows you to express any request on the redis level.
+//! You can fluently switch between both API levels at any point.
 //!
 //! ## Connection Handling
 //!
@@ -48,18 +48,19 @@
 //! # fn main() {}
 //! ```
 //!
-//! ## Unix Sockets
+//! ## Optional Features
 //!
-//! By default this library does not support unix sockets but starting with
-//! redis-rs 0.5.0 you can optionally compile it with unix sockets enabled.
-//! For this you just need to enable the `unix_sockets` flag and some of the
-//! otherwise unavailable APIs become available:
+//! There are currently two features defined that can enable additional
+//! functionality if so desired.
 //!
-//! ```ini
-//! [dependencies.redis]
-//! version = "*"
-//! features = ["unix_socket"]
-//! ```
+//! `with-unix-sockets`:
+//!   By default this library does not support unix sockets on older versions
+//!   of Rust but you can optionally compile it with unix sockets enabled by
+//!   enabling the `with-unix-sockets` feature flag.  On rust 1.10 or later
+//!   this is not needed.
+//!
+//! `with-rustc-json`:
+//!   This feature flag enables the `rustc_serialize` JSON support.
 //!
 //! ## Connection Parameters
 //!
@@ -73,8 +74,13 @@
 //!
 //! The URL format is `redis://[:<passwd>@]<hostname>[:port][/<db>]`
 //!
-//! In case you have compiled the crate with the `unix_sockets` feature
-//! then you can also use a unix URL in this format:
+//! In case the create is compiled with Unix socket support you can also
+//! use a unix URL in this format:
+//!
+//! `redis+unix:///[:<passwd>@]<path>[?db=<db>]`
+//!
+//! For compatibility with some other redis libraries, the "unix" scheme
+//! is also supported:
 //!
 //! `unix:///[:<passwd>@]<path>[?db=<db>]`
 //!
@@ -263,7 +269,8 @@
 //! ```rust,no_run
 //! # fn do_something() -> redis::RedisResult<()> {
 //! let client = try!(redis::Client::open("redis://127.0.0.1/"));
-//! let mut pubsub = try!(client.get_pubsub());
+//! let mut con = try!(client.get_connection());
+//! let mut pubsub = con.as_pubsub();
 //! try!(pubsub.subscribe("channel_1"));
 //! try!(pubsub.subscribe("channel_2"));
 //!
@@ -305,26 +312,26 @@
 #![deny(non_camel_case_types)]
 
 extern crate url;
-extern crate rustc_serialize as serialize;
 extern crate sha1;
 
-#[cfg(feature="unix_socket")]
+#[cfg(feature="with-rustc-json")]
+pub extern crate rustc_serialize as serialize;
+#[cfg(feature="with-unix-sockets")]
 extern crate unix_socket;
 
-/* public api */
+#[doc(hidden)]
+#[cfg(feature="with-rustc-json")]
+pub use serialize::json::Json;
+
+// public api
 pub use parser::{parse_redis_value, Parser};
 pub use client::Client;
 pub use script::{Script, ScriptInvocation};
-pub use connection::{Connection, ConnectionLike, ConnectionInfo,
-                     ConnectionAddr, IntoConnectionInfo, PubSub, Msg, transaction,
-                     parse_redis_url};
+pub use connection::{Connection, ConnectionLike, ConnectionInfo, ConnectionAddr,
+                     IntoConnectionInfo, PubSub, Msg, transaction, parse_redis_url};
 pub use cmd::{cmd, Cmd, pipe, Pipeline, Iter, pack_command};
-pub use commands::{
-    Commands,
-    PipelineCommands,
-};
+pub use commands::{Commands, PipelineCommands, PubSubCommands, ControlFlow};
 
-#[doc(hidden)]
 pub use types::{
     /* low level values */
     Value,
